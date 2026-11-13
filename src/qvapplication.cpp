@@ -11,7 +11,7 @@
 
 QVApplication::QVApplication(int &argc, char **argv) : QApplication(argc, argv)
 {
-    setDesktopFileName("com.interversehq.qView.desktop");
+    setDesktopFileName("com.local.qview-loop.desktop");
 
     // Connections
     connect(&actionManager, &ActionManager::recentsMenuUpdated, this,
@@ -321,7 +321,7 @@ void QVApplication::defineFilterLists()
 {
     const auto &byteArrayFormats = QImageReader::supportedImageFormats();
 
-    auto filterString = tr("Supported Images") + " (";
+    auto filterString = tr("Supported Media") + " (";
     fileExtensionList.reserve(byteArrayFormats.size() - 1);
 
     const auto addExtension = [&](const QString &extension) {
@@ -352,6 +352,7 @@ void QVApplication::defineFilterLists()
             addExtension(".hif");
         }
     }
+    addExtension(".mp4");
     filterString.chop(1);
     filterString += ")";
 
@@ -366,6 +367,8 @@ void QVApplication::defineFilterLists()
 
         mimeTypeNameList << mime;
     }
+
+    mimeTypeNameList << "video/mp4";
 
     // Build name filter list for file dialogs
     nameFilterList << filterString;

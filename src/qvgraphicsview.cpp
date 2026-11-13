@@ -6,6 +6,7 @@
 #include <QRandomGenerator>
 #include <QWheelEvent>
 #include <QGraphicsPixmapItem>
+#include <QGraphicsVideoItem>
 #include <QGraphicsScene>
 #include <QSettings>
 #include <QMessageBox>
@@ -56,7 +57,16 @@ QVGraphicsView::QVGraphicsView(QWidget *parent) : QGraphicsView(parent)
     expensiveScaleTimerNew->setInterval(50);
     connect(expensiveScaleTimerNew, &QTimer::timeout, this, [this] { scaleExpensively(); });
 
+    videoItem = new QGraphicsVideoItem();
+    videoItem->setObjectName(QStringLiteral("videoOutput"));
+    videoItem->setAspectRatioMode(Qt::IgnoreAspectRatio);
+    videoItem->setZValue(0);
+    videoItem->setVisible(false);
+    scene->addItem(videoItem);
+    imageCore.setVideoOutput(videoItem);
+
     loadedPixmapItem = new QGraphicsPixmapItem();
+    loadedPixmapItem->setZValue(1);
     scene->addItem(loadedPixmapItem);
 
     // Connect to settings signal
@@ -73,7 +83,7 @@ void QVGraphicsView::resizeEvent(QResizeEvent *event)
     if (!isOriginalSize)
         resetScale();
     else
-        centerOn(loadedPixmapItem);
+        centerOn(currentDisplayItem());
 }
 
 void QVGraphicsView::dropEvent(QDropEvent *event)
@@ -308,7 +318,8 @@ QMimeData *QVGraphicsView::getMimeData() const
 
     mimeData->setUrls(
             { QUrl::fromLocalFile(imageCore.getCurrentFileDetails().fileInfo.absoluteFilePath()) });
-    mimeData->setImageData(imageCore.getLoadedPixmap().toImage());
+    if (!getCurrentFileDetails().isVideoLoaded)
+        mimeData->setImageData(imageCore.getLoadedPixmap().toImage());
     return mimeData;
 }
 
@@ -397,7 +408,7 @@ void QVGraphicsView::zoom(qreal scaleFactor, const QPoint &pos)
         verticalScrollBar()->setValue(verticalScrollBar()->value() + move.y());
         lastZoomRoundingError = mapToScene(pos) - scenePos;
     } else {
-        centerOn(loadedPixmapItem);
+        centerOn(currentDisplayItem());
     }
 
     if (qvGetSettingBool(ScalingEnabled) && !isOriginalSize) {
@@ -407,6 +418,9 @@ void QVGraphicsView::zoom(qreal scaleFactor, const QPoint &pos)
 
 void QVGraphicsView::scaleExpensively()
 {
+    if (getCurrentFileDetails().isVideoLoaded)
+        return;
+
     // Determine if mirrored or flipped
     bool mirrored = false;
     if (transform().m11() < 0)
@@ -468,10 +482,12 @@ void QVGraphicsView::makeUnscaled()
         flipped = true;
 
     // Return to original size
-    if (getCurrentFileDetails().isMovieLoaded)
-        loadedPixmapItem->setPixmap(getLoadedMovie().currentPixmap());
-    else
-        loadedPixmapItem->setPixmap(getLoadedPixmap());
+    if (!getCurrentFileDetails().isVideoLoaded) {
+        if (getCurrentFileDetails().isMovieLoaded)
+            loadedPixmapItem->setPixmap(getLoadedMovie().currentPixmap());
+        else
+            loadedPixmapItem->setPixmap(getLoadedPixmap());
+    }
 
     setTransform(absoluteTransform);
 
@@ -509,11 +525,27 @@ void QVGraphicsView::animatedFrameChanged(QRect rect)
 
 void QVGraphicsView::updateLoadedPixmapItem()
 {
-    // set pixmap and offset
-    loadedPixmapItem->setPixmap(getLoadedPixmap());
-    scaledSize = loadedPixmapItem->boundingRect().size().toSize();
-
-    resetScale();
+    const auto &details = getCurrentFileDetails();
+    if (details.isVideoLoaded) {
+        const bool wasVisible = videoItem->isVisible();
+        loadedPixmapItem->setVisible(false);
+        videoItem->setVisible(true);
+        videoItem->setOffset(QPointF());
+        videoItem->setSize(details.baseImageSize);
+        videoItem->setTransformOriginPoint(videoItem->boundingRect().center());
+        videoItem->setRotation(imageCore.getCurrentRotation()
+                               + imageCore.getVideoPresentationRotation());
+        scaledSize = details.loadedPixmapSize;
+        // Geometry changes after the first decoded frame must not discard the user's zoom.
+        if (!wasVisible)
+            resetScale();
+    } else {
+        videoItem->setVisible(false);
+        loadedPixmapItem->setVisible(true);
+        loadedPixmapItem->setPixmap(getLoadedPixmap());
+        scaledSize = loadedPixmapItem->boundingRect().size().toSize();
+        resetScale();
+    }
 
     emit updatedLoadedPixmapItem();
 }
@@ -523,7 +555,7 @@ void QVGraphicsView::resetScale()
     if (!getCurrentFileDetails().isPixmapLoaded)
         return;
 
-    fitInViewMarginless(loadedPixmapItem);
+    fitInViewMarginless(currentDisplayItem());
 
     if (qvGetSettingBool(ScalingEnabled))
         expensiveScaleTimerNew->start();
@@ -541,7 +573,7 @@ void QVGraphicsView::originalSize()
     makeUnscaled();
 
     resetTransform();
-    centerOn(loadedPixmapItem);
+    centerOn(currentDisplayItem());
 
     zoomBasis = transform();
     zoomBasisScaleFactor = 1.0;
@@ -780,6 +812,13 @@ void QVGraphicsView::centerOn(const QGraphicsItem *item)
     centerOn(item->sceneBoundingRect().center());
 }
 
+QGraphicsItem *QVGraphicsView::currentDisplayItem() const
+{
+    if (getCurrentFileDetails().isVideoLoaded)
+        return videoItem;
+    return loadedPixmapItem;
+}
+
 void QVGraphicsView::settingsUpdated()
 {
     if (getCurrentFileDetails().isPixmapLoaded)
@@ -804,6 +843,36 @@ void QVGraphicsView::setPaused(const bool &desiredState)
 void QVGraphicsView::setSpeed(const int &desiredSpeed)
 {
     imageCore.setSpeed(desiredSpeed);
+}
+
+bool QVGraphicsView::isAnimated() const
+{
+    return imageCore.isAnimated();
+}
+
+bool QVGraphicsView::isPaused() const
+{
+    return imageCore.isPaused();
+}
+
+int QVGraphicsView::getSpeed() const
+{
+    return imageCore.getSpeed();
+}
+
+void QVGraphicsView::setMuted(bool muted)
+{
+    imageCore.setMuted(muted);
+}
+
+bool QVGraphicsView::isMuted() const
+{
+    return imageCore.isMuted();
+}
+
+void QVGraphicsView::releaseVideo()
+{
+    imageCore.releaseVideo();
 }
 
 void QVGraphicsView::rotateImage(int rotation)

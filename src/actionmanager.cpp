@@ -271,6 +271,7 @@ QMenu *ActionManager::buildToolsMenu(bool addIcon, QWidget *parent)
 
     addCloneOfAction(toolsMenu, "saveframeas");
     addCloneOfAction(toolsMenu, "pause");
+    addCloneOfAction(toolsMenu, "mute");
     addCloneOfAction(toolsMenu, "nextframe");
     toolsMenu->addSeparator();
     addCloneOfAction(toolsMenu, "decreasespeed");
@@ -619,6 +620,8 @@ void ActionManager::actionTriggered(QAction *triggeredAction, MainWindow *releva
         relevantWindow->saveFrameAs();
     } else if (key == "pause") {
         relevantWindow->pause();
+    } else if (key == "mute") {
+        relevantWindow->toggleMute();
     } else if (key == "nextframe") {
         relevantWindow->nextFrame();
     } else if (key == "decreasespeed") {
@@ -783,8 +786,12 @@ void ActionManager::initializeActionLibrary()
     actionLibrary.insert("saveframeas", saveFrameAsAction);
 
     auto *pauseAction = new QAction(QIcon::fromTheme("media-playback-pause"), tr("Pa&use"));
-    pauseAction->setData({ "gifdisable" });
+    pauseAction->setData({ "mediadisable" });
     actionLibrary.insert("pause", pauseAction);
+
+    auto *muteAction = new QAction(QIcon::fromTheme("audio-volume-muted"), tr("Unmute"));
+    muteAction->setData({ "videodisable" });
+    actionLibrary.insert("mute", muteAction);
 
     auto *nextFrameAction = new QAction(QIcon::fromTheme("media-skip-forward"), tr("&Next Frame"));
     nextFrameAction->setData({ "gifdisable" });
@@ -792,17 +799,17 @@ void ActionManager::initializeActionLibrary()
 
     auto *decreaseSpeedAction =
             new QAction(QIcon::fromTheme("media-seek-backward"), tr("&Decrease Speed"));
-    decreaseSpeedAction->setData({ "gifdisable" });
+    decreaseSpeedAction->setData({ "mediadisable" });
     actionLibrary.insert("decreasespeed", decreaseSpeedAction);
 
     auto *resetSpeedAction =
             new QAction(QIcon::fromTheme("media-playback-start"), tr("&Reset Speed"));
-    resetSpeedAction->setData({ "gifdisable" });
+    resetSpeedAction->setData({ "mediadisable" });
     actionLibrary.insert("resetspeed", resetSpeedAction);
 
     auto *increaseSpeedAction =
             new QAction(QIcon::fromTheme("media-skip-forward"), tr("&Increase Speed"));
-    increaseSpeedAction->setData({ "gifdisable" });
+    increaseSpeedAction->setData({ "mediadisable" });
     actionLibrary.insert("increasespeed", increaseSpeedAction);
 
     auto *slideshowAction =

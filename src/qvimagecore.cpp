@@ -14,6 +14,13 @@
 #include <QIcon>
 #include <QGuiApplication>
 #include <QScreen>
+#include <QMediaPlayer>
+#include <QMediaMetaData>
+#include <QAudioOutput>
+#include <QGraphicsVideoItem>
+#include <QVideoSink>
+#include <QVideoFrame>
+#include <QWidget>
 
 QCache<QString, QVImageCore::ReadData> QVImageCore::imageCache;
 
@@ -27,9 +34,6 @@ QVImageCore::QVImageCore(QObject *parent) : QObject(parent)
     currentRotation = 0;
 
     connect(&loadedMovie, &QMovie::updated, this, &QVImageCore::animatedFrameChanged);
-
-    connect(&loadFutureWatcher, &QFutureWatcher<ReadData>::finished, this,
-            [this]() { loadPixmap(loadFutureWatcher.result()); });
 
     largestDimension = 0;
     const auto screenList = QGuiApplication::screens();
@@ -46,30 +50,34 @@ QVImageCore::QVImageCore(QObject *parent) : QObject(parent)
         }
     }
 
-    waitingOnLoad = false;
-
     // Connect to settings signal
     connect(&qvApp->getSettingsManager(), &SettingsManager::settingsUpdated, this,
             &QVImageCore::settingsUpdated);
     settingsUpdated();
 }
 
+QVImageCore::~QVImageCore()
+{
+    releaseVideo();
+    // readFile uses this object's immutable display-size data on worker threads.
+    for (auto *watcher : readWatchers)
+        watcher->waitForFinished();
+}
+
+bool QVImageCore::isVideoFile(const QString &fileName)
+{
+    return QFileInfo(fileName).suffix().compare("mp4", Qt::CaseInsensitive) == 0;
+}
+
 void QVImageCore::loadFile(const QString &fileName, bool isReloading)
 {
-    if (waitingOnLoad) {
-        return;
-    }
-
     QString sanitaryFileName = fileName;
-
-    // sanitize file name if necessary
-    QUrl sanitaryUrl = QUrl(fileName);
+    const QUrl sanitaryUrl(fileName);
     if (sanitaryUrl.isLocalFile())
         sanitaryFileName = sanitaryUrl.toLocalFile();
 
     QFileInfo fileInfo(sanitaryFileName);
     sanitaryFileName = fileInfo.absoluteFilePath();
-
     if (fileInfo.isDir()) {
         updateFolderInfo(sanitaryFileName);
         if (currentFileDetails.folderFileInfoList.isEmpty())
@@ -79,34 +87,169 @@ void QVImageCore::loadFile(const QString &fileName, bool isReloading)
         return;
     }
 
-    // Pause playing movie because it feels better that way
-    setPaused(true);
-
+    releaseVideo();
+    const quint64 requestId = ++loadRequestId;
+    currentFileDetails = getEmptyFileDetails();
+    currentFileDetails.fileInfo = fileInfo;
     currentFileDetails.isLoadRequested = true;
-    waitingOnLoad = true;
+    currentFileDetails.updateLoadedIndexInFolder();
+    if (currentFileDetails.loadedIndexInFolder == -1)
+        updateFolderInfo();
+    loadEmptyPixmap();
 
-    QColorSpace targetColorSpace = getTargetColorSpace();
-    QString cacheKey = getPixmapCacheKey(sanitaryFileName, fileInfo.size(), targetColorSpace);
+    if (isVideoFile(sanitaryFileName)) {
+        loadVideo(sanitaryFileName, requestId);
+        return;
+    }
 
-    // check if cached already before loading the long way
+    const QColorSpace targetColorSpace = getTargetColorSpace();
+    const QString cacheKey = getPixmapCacheKey(sanitaryFileName, fileInfo.size(), targetColorSpace);
     auto *cachedData = isReloading ? nullptr : QVImageCore::imageCache.take(cacheKey);
-    if (cachedData != nullptr) {
-        ReadData readData = *cachedData;
+    if (cachedData) {
+        const ReadData readData = *cachedData;
         delete cachedData;
         loadPixmap(readData);
+        return;
     }
-    // or see if the preloader is already working on it
-    else if (preloadFilesInProgress.contains(sanitaryFileName)) {
-        waitingOnPreloadFile = sanitaryFileName;
-    } else {
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-        loadFutureWatcher.setFuture(QtConcurrent::run(this, &QVImageCore::readFile,
-                                                      sanitaryFileName, targetColorSpace));
+
+    auto *watcher = new QFutureWatcher<ReadData>(this);
+    readWatchers.append(watcher);
+    connect(watcher, &QFutureWatcher<ReadData>::finished, this, [this, watcher, requestId]() {
+        if (requestId == loadRequestId)
+            loadPixmap(watcher->result());
+        readWatchers.removeAll(watcher);
+        watcher->deleteLater();
+    });
+    watcher->setFuture(QtConcurrent::run(&QVImageCore::readFile, this,
+                                         sanitaryFileName, targetColorSpace));
+}
+
+void QVImageCore::setVideoOutput(QGraphicsVideoItem *output)
+{
+    videoOutput = output;
+}
+
+bool QVImageCore::isCurrentVideo(QMediaPlayer *player, quint64 requestId) const
+{
+    return loadedVideo == player && requestId == loadRequestId
+            && player->source() == QUrl::fromLocalFile(currentFileDetails.fileInfo.absoluteFilePath());
+}
+
+void QVImageCore::loadVideo(const QString &fileName, quint64 requestId)
+{
+    auto *player = new QMediaPlayer(this);
+    loadedVideo = player;
+    player->setObjectName("activeVideoPlayer");
+    audioOutput = new QAudioOutput(player);
+    audioOutput->setMuted(true);
+    player->setAudioOutput(audioOutput);
+    player->setVideoOutput(videoOutput);
+    player->setLoops(QMediaPlayer::Infinite);
+
+    connect(player, &QMediaPlayer::errorOccurred, this,
+            [this, player, requestId](QMediaPlayer::Error error, const QString &message) {
+        if (error == QMediaPlayer::NoError || !isCurrentVideo(player, requestId))
+            return;
+        releaseVideo();
+        currentFileDetails.errorData = {true, int(error), message};
+        loadEmptyPixmap();
+    });
+    connect(player, &QMediaPlayer::metaDataChanged, this,
+            [this, player, requestId]() { updateVideoGeometry(player, requestId); });
+    if (videoOutput) {
+        connect(videoOutput, &QGraphicsVideoItem::nativeSizeChanged, player,
+                [this, player, requestId]() { updateVideoGeometry(player, requestId); });
+        connect(videoOutput->videoSink(), &QVideoSink::videoFrameChanged, player,
+                [this, player, requestId](const QVideoFrame &frame) {
+            if (frame.isValid())
+                updateVideoGeometry(player, requestId);
+        });
+    }
+    player->setSource(QUrl::fromLocalFile(fileName));
+    player->play();
+}
+
+void QVImageCore::updateVideoGeometry(QMediaPlayer *player, quint64 requestId)
+{
+    if (!isCurrentVideo(player, requestId) || !videoOutput)
+        return;
+    const QVideoFrame frame = videoOutput->videoSink()->videoFrame();
+    if (!frame.isValid())
+        return;
+    QSize size = videoOutput->nativeSize().toSize();
+    if (size.isEmpty())
+        return;
+
+    int frameRotation = 0;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+    frameRotation = int(frame.rotation());
 #else
-        loadFutureWatcher.setFuture(QtConcurrent::run(&QVImageCore::readFile, this,
-                                                      sanitaryFileName, targetColorSpace));
+    frameRotation = int(frame.rotationAngle());
 #endif
+    frameRotation = (frameRotation % 360 + 360) % 360;
+
+    // QGraphicsVideoItem applies rotation carried by the frame while painting. Its
+    // native size can still be unrotated, so update the item dimensions when needed.
+    if ((frameRotation == 90 || frameRotation == 270) && size == frame.size())
+        size.transpose();
+
+    // Some backends leave frame rotation unset and expose the source orientation
+    // through media metadata. That needs a scene-item transform as a fallback.
+    int presentationRotation = 0;
+    if (frameRotation == 0) {
+        const QVariant orientation = player->metaData().value(QMediaMetaData::Orientation);
+        if (orientation.isValid())
+            presentationRotation = orientation.toInt();
     }
+    presentationRotation = (presentationRotation % 360 + 360) % 360;
+    if (presentationRotation % 90 != 0)
+        presentationRotation = 0;
+
+    const bool firstFrame = !currentFileDetails.isVideoLoaded;
+    const bool rotationChanged = videoPresentationRotation != presentationRotation;
+    if (!firstFrame && currentFileDetails.baseImageSize == size && !rotationChanged)
+        return;
+    currentFileDetails.baseImageSize = size;
+    QTransform rotation;
+    videoPresentationRotation = presentationRotation;
+    rotation.rotate(currentRotation + videoPresentationRotation);
+    currentFileDetails.loadedPixmapSize = rotation.mapRect(QRect(QPoint(), size)).size();
+    currentFileDetails.isPixmapLoaded = true;
+    currentFileDetails.isVideoLoaded = true;
+    currentFileDetails.errorData = {};
+    if (firstFrame) {
+        currentFileDetails.timeSinceLoaded.start();
+        emit fileChanged();
+        requestCaching();
+    } else {
+        emit updateLoadedPixmapItem();
+    }
+}
+
+void QVImageCore::releaseVideo()
+{
+    ++loadRequestId;
+    videoPresentationRotation = 0;
+    if (loadedVideo) {
+        auto *player = loadedVideo;
+        loadedVideo = nullptr;
+        audioOutput = nullptr;
+        player->setObjectName(QString());
+        player->disconnect(this);
+        if (videoOutput) {
+            disconnect(videoOutput, nullptr, player, nullptr);
+            disconnect(videoOutput->videoSink(), nullptr, player, nullptr);
+        }
+        player->stop();
+        player->setSource(QUrl());
+        player->setVideoOutput(nullptr);
+        player->deleteLater();
+    }
+    if (videoOutput)
+        videoOutput->videoSink()->setVideoFrame(QVideoFrame());
+    if (currentFileDetails.isVideoLoaded)
+        currentFileDetails.isPixmapLoaded = false;
+    currentFileDetails.isVideoLoaded = false;
 }
 
 QVImageCore::ReadData QVImageCore::readFile(const QString &fileName,
@@ -185,8 +328,6 @@ void QVImageCore::loadPixmap(const ReadData &readData)
         updateFolderInfo();
 
     // Reset mechanism to avoid stalling while loading
-    waitingOnLoad = false;
-
     if (currentFileDetails.errorData.hasError) {
         loadEmptyPixmap();
         return;
@@ -236,6 +377,7 @@ void QVImageCore::loadPixmap(const ReadData &readData)
 
 void QVImageCore::closeImage()
 {
+    releaseVideo();
     currentFileDetails = getEmptyFileDetails();
     loadEmptyPixmap();
 }
@@ -254,6 +396,7 @@ QVImageCore::FileDetails QVImageCore::getEmptyFileDetails()
     return { QFileInfo(),
              currentFileDetails.folderFileInfoList,
              currentFileDetails.loadedIndexInFolder,
+             false,
              false,
              false,
              false,
@@ -469,6 +612,9 @@ void QVImageCore::requestCaching()
 
 void QVImageCore::requestCachingFile(const QString &filePath, const QColorSpace &targetColorSpace)
 {
+    if (isVideoFile(filePath))
+        return;
+
     QFile imgFile(filePath);
     QString cacheKey = getPixmapCacheKey(filePath, imgFile.size(), targetColorSpace);
 
@@ -481,16 +627,13 @@ void QVImageCore::requestCachingFile(const QString &filePath, const QColorSpace 
 
     preloadFilesInProgress.append(filePath);
 
-    auto *cacheFutureWatcher = new QFutureWatcher<ReadData>();
+    auto *cacheFutureWatcher = new QFutureWatcher<ReadData>(this);
+    readWatchers.append(cacheFutureWatcher);
     connect(cacheFutureWatcher, &QFutureWatcher<ReadData>::finished, this,
             [cacheFutureWatcher, this]() {
                 const ReadData readData = cacheFutureWatcher->result();
-                if (waitingOnPreloadFile == readData.absoluteFilePath) {
-                    loadPixmap(readData);
-                    waitingOnPreloadFile = QString();
-                } else {
-                    addToCache(std::move(readData));
-                }
+                addToCache(std::move(readData));
+                readWatchers.removeAll(cacheFutureWatcher);
                 preloadFilesInProgress.removeAll(readData.absoluteFilePath);
                 cacheFutureWatcher->deleteLater();
             });
@@ -546,7 +689,11 @@ QColorSpace QVImageCore::getTargetColorSpace() const
 QColorSpace QVImageCore::detectDisplayColorSpace() const
 {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QWindow *window = static_cast<QWidget *>(parent())->window()->windowHandle();
+    auto *parentWidget = qobject_cast<QWidget *>(parent());
+    QWidget *topLevelWidget = parentWidget ? parentWidget->window() : nullptr;
+    QWindow *window = topLevelWidget ? topLevelWidget->windowHandle() : nullptr;
+    if (!window)
+        return {};
 
     QByteArray profileData;
 #  ifdef WIN32_LOADED
@@ -623,7 +770,12 @@ void QVImageCore::jumpToNextFrame()
 
 void QVImageCore::setPaused(bool desiredState)
 {
-    if (currentFileDetails.isMovieLoaded)
+    if (loadedVideo) {
+        if (desiredState)
+            loadedVideo->pause();
+        else
+            loadedVideo->play();
+    } else if (currentFileDetails.isMovieLoaded)
         loadedMovie.setPaused(desiredState);
 }
 
@@ -635,8 +787,37 @@ void QVImageCore::setSpeed(int desiredSpeed)
     if (desiredSpeed > 1000)
         desiredSpeed = 1000;
 
-    if (currentFileDetails.isMovieLoaded)
+    if (loadedVideo)
+        loadedVideo->setPlaybackRate(desiredSpeed / 100.0);
+    else if (currentFileDetails.isMovieLoaded)
         loadedMovie.setSpeed(desiredSpeed);
+}
+
+bool QVImageCore::isAnimated() const
+{
+    return currentFileDetails.isMovieLoaded || currentFileDetails.isVideoLoaded;
+}
+
+bool QVImageCore::isPaused() const
+{
+    return loadedVideo ? loadedVideo->playbackState() == QMediaPlayer::PausedState
+                       : loadedMovie.state() == QMovie::Paused;
+}
+
+int QVImageCore::getSpeed() const
+{
+    return loadedVideo ? qRound(loadedVideo->playbackRate() * 100) : loadedMovie.speed();
+}
+
+void QVImageCore::setMuted(bool muted)
+{
+    if (audioOutput)
+        audioOutput->setMuted(muted);
+}
+
+bool QVImageCore::isMuted() const
+{
+    return !audioOutput || audioOutput->isMuted();
 }
 
 void QVImageCore::rotateImage(int rotation)
@@ -646,6 +827,13 @@ void QVImageCore::rotateImage(int rotation)
     // normalize between 360 and 0
     currentRotation = (currentRotation % 360 + 360) % 360;
     QTransform transform;
+    if (currentFileDetails.isVideoLoaded) {
+        transform.rotate(currentRotation + videoPresentationRotation);
+        currentFileDetails.loadedPixmapSize = transform.mapRect(
+                QRect(QPoint(), currentFileDetails.baseImageSize)).size();
+        emit updateLoadedPixmapItem();
+        return;
+    }
 
     QImage transformedImage;
     if (currentFileDetails.isMovieLoaded) {
@@ -688,7 +876,7 @@ QPixmap QVImageCore::scaleExpensively(const int desiredWidth, const int desiredH
 
 QPixmap QVImageCore::scaleExpensively(const QSizeF desiredSize)
 {
-    if (!currentFileDetails.isPixmapLoaded)
+    if (!currentFileDetails.isPixmapLoaded || currentFileDetails.isVideoLoaded)
         return QPixmap();
 
     QSize size = QSize(loadedPixmap.width(), loadedPixmap.height());
@@ -747,7 +935,8 @@ void QVImageCore::settingsUpdated()
         changedImagePreprocessing = true;
     }
 
-    if (changedImagePreprocessing && currentFileDetails.isPixmapLoaded)
+    if (changedImagePreprocessing && currentFileDetails.isPixmapLoaded
+        && !currentFileDetails.isVideoLoaded)
         loadFile(currentFileDetails.fileInfo.absoluteFilePath());
 }
 

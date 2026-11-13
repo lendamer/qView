@@ -5,13 +5,15 @@
 	<key>CFBundleExecutable</key>
 	<string>@PROJECT_NAME@</string>
 	<key>CFBundleName</key>
-	<string>@PROJECT_NAME@</string>
+	<string>qView Loop</string>
+	<key>CFBundleDisplayName</key>
+	<string>qView Loop</string>
 	<key>CFBundleGetInfoString</key>
 	<string>@PROJECT_VERSION@</string>
 	<key>CFBundleIconFile</key>
 	<string>@MACOSX_ICON_FILENAME@</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.interversehq.qView</string>
+	<string>com.local.qview-loop</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>LSMinimumSystemVersion</key>
@@ -71,6 +73,18 @@
 			</array>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>MPEG-4 Video</string>
+			<key>CFBundleTypeExtensions</key>
+			<array><string>mp4</string></array>
+			<key>LSItemContentTypes</key>
+			<array><string>public.mpeg-4</string></array>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
 		</dict>
 	</array>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>

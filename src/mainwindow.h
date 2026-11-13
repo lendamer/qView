@@ -105,6 +105,8 @@ public:
 
     void pause();
 
+    void toggleMute();
+
     void nextFrame();
 
     void decreaseSpeed();
@@ -159,6 +161,8 @@ protected slots:
     void shortcutsUpdated();
 
 private:
+    void updatePlaybackActions();
+
     Ui::MainWindow *ui;
     QVGraphicsView *graphicsView;
 

@@ -1,4 +1,4 @@
-﻿#ifndef QVIMAGECORE_H
+#ifndef QVIMAGECORE_H
 #define QVIMAGECORE_H
 
 #include <QObject>
@@ -10,6 +10,11 @@
 #include <QTimer>
 #include <QCache>
 #include <QElapsedTimer>
+#include <QPointer>
+
+class QMediaPlayer;
+class QAudioOutput;
+class QGraphicsVideoItem;
 
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
 #  include <QColorSpace>
@@ -49,6 +54,7 @@ public:
         bool isLoadRequested = false;
         bool isPixmapLoaded = false;
         bool isMovieLoaded = false;
+        bool isVideoLoaded = false;
         QSize baseImageSize;
         QSize loadedPixmapSize;
         QElapsedTimer timeSinceLoaded;
@@ -82,6 +88,7 @@ public:
     };
 
     explicit QVImageCore(QObject *parent = nullptr);
+    ~QVImageCore() override;
 
     void loadFile(const QString &fileName, bool isReloading = false);
     ReadData readFile(const QString &fileName, const QColorSpace &targetColorSpace);
@@ -105,6 +112,13 @@ public:
     void jumpToNextFrame();
     void setPaused(bool desiredState);
     void setSpeed(int desiredSpeed);
+    bool isAnimated() const;
+    bool isPaused() const;
+    int getSpeed() const;
+    void setMuted(bool muted);
+    bool isMuted() const;
+    void releaseVideo();
+    void setVideoOutput(QGraphicsVideoItem *output);
 
     void rotateImage(int rotation);
     QImage matchCurrentRotation(const QImage &imageToRotate);
@@ -118,6 +132,7 @@ public:
     const QMovie &getLoadedMovie() const { return loadedMovie; }
     const FileDetails &getCurrentFileDetails() const { return currentFileDetails; }
     int getCurrentRotation() const { return currentRotation; }
+    int getVideoPresentationRotation() const { return videoPresentationRotation; }
 
 signals:
     void animatedFrameChanged(QRect rect);
@@ -137,9 +152,19 @@ private:
     FileDetails currentFileDetails;
     int currentRotation;
 
-    QFutureWatcher<ReadData> loadFutureWatcher;
+    void loadVideo(const QString &fileName, quint64 requestId);
+    void updateVideoGeometry(QMediaPlayer *player, quint64 requestId);
+    bool isCurrentVideo(QMediaPlayer *player, quint64 requestId) const;
+    static bool isVideoFile(const QString &fileName);
 
-    int colorSpaceConversion;
+    QPointer<QGraphicsVideoItem> videoOutput;
+    QMediaPlayer *loadedVideo = nullptr;
+    QAudioOutput *audioOutput = nullptr;
+    QList<QFutureWatcher<ReadData> *> readWatchers;
+    quint64 loadRequestId = 0;
+    int videoPresentationRotation = 0;
+
+    int colorSpaceConversion = -1;
 
     static QCache<QString, ReadData> imageCache;
 
@@ -148,11 +173,9 @@ private:
 
     QStringList lastFilesPreloaded;
     QStringList preloadFilesInProgress;
-    QString waitingOnPreloadFile;
 
     int largestDimension;
 
-    bool waitingOnLoad;
 };
 
 #endif // QVIMAGECORE_H

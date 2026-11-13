@@ -161,6 +161,8 @@ void ShortcutManager::initializeShortcutsList()
     shortcutsList.append(
             { tr("Pause"), "pause", QStringList(QKeySequence(Qt::Key_P).toString()), {} });
     shortcutsList.append(
+            { tr("Toggle Mute"), "mute", QStringList(QKeySequence(Qt::Key_M).toString()), {} });
+    shortcutsList.append(
             { tr("Next Frame"), "nextframe", QStringList(QKeySequence(Qt::Key_N).toString()), {} });
     shortcutsList.append({ tr("Decrease Speed"),
                            "decreasespeed",

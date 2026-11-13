@@ -48,6 +48,12 @@ public:
     void jumpToNextFrame();
     void setPaused(const bool &desiredState);
     void setSpeed(const int &desiredSpeed);
+    bool isAnimated() const;
+    bool isPaused() const;
+    int getSpeed() const;
+    void setMuted(bool muted);
+    bool isMuted() const;
+    void releaseVideo();
     void rotateImage(int rotation);
 
     const QVImageCore::FileDetails &getCurrentFileDetails() const
@@ -109,8 +115,10 @@ private slots:
 
 private:
     void updateFilteringMode();
+    QGraphicsItem *currentDisplayItem() const;
 
     QGraphicsPixmapItem *loadedPixmapItem;
+    QGraphicsVideoItem *videoItem;
 
     constexpr static int MARGIN = -2;
     constexpr static qreal MAX_EXPENSIVE_SCALING_SIZE = 3;

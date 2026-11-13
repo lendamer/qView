@@ -27,24 +27,11 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-# Find required Qt components
-find_package(Qt6 QUIET COMPONENTS Core Gui Network Widgets Svg)
-if(Qt6_FOUND)
-    set(QT_VERSION_MAJOR 6)
-    set(QT_VERSION ${Qt6_VERSION})
-    # Find optional tools
-    find_package(Qt6 QUIET COMPONENTS LinguistTools)
-else()
-    set(QT5_FIND_COMPONENTS Core Gui Network Widgets Svg)
-    if(UNIX AND NOT APPLE)
-        list(APPEND QT5_FIND_COMPONENTS X11Extras)
-    endif()
-    find_package(Qt5 REQUIRED COMPONENTS ${QT5_FIND_COMPONENTS})
-    set(QT_VERSION_MAJOR 5)
-    set(QT_VERSION ${Qt5_VERSION})
-    # Find optional tools
-    find_package(Qt5 QUIET COMPONENTS LinguistTools)
-endif()
+# Video playback in this fork uses the Qt6 multimedia API.
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Network Widgets Svg Concurrent Multimedia MultimediaWidgets)
+set(QT_VERSION_MAJOR 6)
+set(QT_VERSION ${Qt6_VERSION})
+find_package(Qt6 QUIET COMPONENTS LinguistTools)
 
 # Source files
 set(PROJECT_SOURCES
@@ -95,7 +82,7 @@ set(PROJECT_FORMS
 )
 
 # To disables both manual and automatic checking for updates
-option(QV_DISABLE_ONLINE_VERSION_CHECK "Disable online version check" OFF)
+option(QV_DISABLE_ONLINE_VERSION_CHECK "Disable online version check" ON)
 if(NOT QV_DISABLE_ONLINE_VERSION_CHECK)
     list(APPEND PROJECT_SOURCES src/updatechecker.cpp)
     list(APPEND PROJECT_HEADERS src/updatechecker.h)
@@ -139,7 +126,7 @@ if(WIN32)
 endif()
 add_executable(${PROJECT_NAME} ${EXECUTABLE_TYPE} ${PROJECT_SOURCES} ${PROJECT_HEADERS} ${PROJECT_FORMS} ${PROJECT_RESOURCES})
 
-target_link_libraries(${PROJECT_NAME} PRIVATE Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Svg)
+target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Widgets Qt6::Svg Qt6::Concurrent Qt6::Multimedia Qt6::MultimediaWidgets)
 
 # Set the executable name to lowercase on Linux
 if(UNIX AND NOT APPLE)
@@ -147,7 +134,7 @@ if(UNIX AND NOT APPLE)
 endif()
 
 # Add compile definitions based on options
-if(NOT QV_DISABLE_ONLINE_VERSION_CHECK)
+if(QV_DISABLE_ONLINE_VERSION_CHECK)
     target_compile_definitions(${PROJECT_NAME} PRIVATE QV_DISABLE_ONLINE_VERSION_CHECK)
 endif()
 
@@ -200,9 +187,6 @@ elseif(UNIX AND NOT APPLE)
     if(NOT NO_X11)
         find_package(X11 REQUIRED)
         set(PLATFORM_SPECIFIC_LIBS ${X11_LIBRARIES})
-        if(NOT Qt6_FOUND)
-            list(APPEND PLATFORM_SPECIFIC_LIBS Qt5::X11Extras)
-        endif()
         target_link_libraries(${PROJECT_NAME} PRIVATE ${PLATFORM_SPECIFIC_LIBS})
     endif()
 endif()
