@@ -13,3 +13,5 @@ Read-only subagent reviews covered playback, integration, packaging and the comp
 The app uses a distinct settings/bundle identity. It is kept local on the feature branch; nothing is pushed or published. The original installed qView is untouched. The dedicated clone provides isolation; no extra worktree was created. The user's instruction to proceed with Qt Multimedia waived further design questions.
 
 Desktop File Provider restores Finder metadata on copied framework bundles and prevents strict signature verification there. The packaging script stages outside that domain, installs the locally signed bundle in ~/Applications, and places a Desktop symlink. Only FinderInfo/ResourceFork packaging attributes are cleaned; security attributes are preserved.
+
+Final installed bundle: `~/Applications/qView Loop.app`. Strict deep codesign verification exited 0; the Desktop app is a symlink to this bundle. The installed bundle was launched fresh and visually rendered the 4K MP4. The build helper passed shell syntax validation; the most recent full compile/native suite passed before packaging.
