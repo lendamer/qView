@@ -127,6 +127,13 @@ void QVImageCore::loadFile(const QString &fileName, bool isReloading)
 void QVImageCore::setVideoOutput(QGraphicsVideoItem *output)
 {
     videoOutput = output;
+    if (videoOutput) {
+        auto *sink = videoOutput->videoSink();
+        connect(sink, &QVideoSink::subtitleTextChanged, sink, [sink](const QString &text) {
+            if (!text.isEmpty())
+                sink->setSubtitleText(QString());
+        });
+    }
 }
 
 bool QVImageCore::isCurrentVideo(QMediaPlayer *player, quint64 requestId) const

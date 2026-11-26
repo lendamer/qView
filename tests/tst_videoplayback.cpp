@@ -1,5 +1,6 @@
 #include <QtTest>
 
+#include <QDir>
 #include <QGraphicsScene>
 #include <QGraphicsVideoItem>
 #include <QMediaPlayer>
@@ -18,12 +19,15 @@ class VideoPlaybackTests : public QObject
 
 private slots:
     void validMp4BecomesReady();
+    void generatedSubtitlesStayHidden();
     void videoLoopsAndSupportsPlaybackControls();
     void videoUsesNativeSceneGeometryAndRotation();
     void decodedFrameRotationIsNotAppliedTwice();
     void videoScaleSurvivesLoopBoundary();
     void replacingMediaDiscardsStaleVideo();
     void corruptVideoCanBeReplaced();
+    void rapidVideoSwitchingKeepsLatestFile();
+    void switchingExternalVideos();
     void videoClipboardContainsOnlyItsUrl();
     void gifStillReportsAnimationControls();
 };
@@ -53,6 +57,34 @@ void VideoPlaybackTests::validMp4BecomesReady()
     QVERIFY(view.getCurrentFileDetails().isPixmapLoaded);
     QVERIFY(!view.getCurrentFileDetails().errorData.hasError);
     QVERIFY(view.isAnimated());
+}
+
+void VideoPlaybackTests::generatedSubtitlesStayHidden()
+{
+    const QString path = qEnvironmentVariable("QVIEW_SUBTITLE_TEST_VIDEO");
+    if (path.isEmpty())
+        QSKIP("Set QVIEW_SUBTITLE_TEST_VIDEO to a video that generates captions");
+    QVGraphicsView view;
+    view.resize(640, 480);
+    view.show();
+    view.loadFile(path);
+    QTRY_VERIFY_WITH_TIMEOUT(view.getCurrentFileDetails().isVideoLoaded, 10000);
+    auto *item = videoItemIn(view);
+    QVERIFY(item);
+    bool displayedSubtitle = false;
+    int subtitleUpdates = 0;
+    auto *sink = item->videoSink();
+    connect(sink, &QVideoSink::subtitleTextChanged, &view,
+            [sink, &displayedSubtitle, &subtitleUpdates](const QString &text) {
+        if (!text.isEmpty()) {
+            ++subtitleUpdates;
+            displayedSubtitle |= !sink->subtitleText().isEmpty();
+        }
+    }, Qt::QueuedConnection);
+    QTest::qWait(12000);
+    QVERIFY2(subtitleUpdates > 0, "The test video did not generate subtitles");
+    QVERIFY2(!displayedSubtitle, "Unexpected subtitle displayed");
+    QVERIFY(sink->subtitleText().isEmpty());
 }
 
 void VideoPlaybackTests::videoLoopsAndSupportsPlaybackControls()
@@ -203,6 +235,77 @@ void VideoPlaybackTests::replacingMediaDiscardsStaleVideo()
     QTest::qWait(250);
     QCOMPARE(view.getCurrentFileDetails().fileInfo.fileName(), QStringLiteral("loop.mp4"));
     QCOMPARE(view.getCurrentFileDetails().baseImageSize, QSize(320, 180));
+}
+
+void VideoPlaybackTests::rapidVideoSwitchingKeepsLatestFile()
+{
+    QVGraphicsView view;
+    view.resize(640, 480);
+    view.show();
+    // Exercise replacement after a short event-loop window for native loading.
+    for (int i = 0; i < 300; ++i) {
+        view.loadFile(fixture(i % 2 ? QStringLiteral("portrait.mp4")
+                                   : QStringLiteral("loop.mp4")));
+        QTest::qWait(5);
+    }
+    view.loadFile(fixture(QStringLiteral("portrait.mp4")));
+    QTRY_VERIFY_WITH_TIMEOUT(view.getCurrentFileDetails().isVideoLoaded, 10000);
+    QCOMPARE(view.getCurrentFileDetails().fileInfo.fileName(), QStringLiteral("portrait.mp4"));
+    QCOMPARE(view.getCurrentFileDetails().baseImageSize, QSize(120, 200));
+    view.loadFile(fixture(QStringLiteral("still.png")));
+    QTRY_VERIFY_WITH_TIMEOUT(view.getCurrentFileDetails().isPixmapLoaded, 10000);
+    QTest::qWait(500);
+    QVERIFY(!view.getCurrentFileDetails().isVideoLoaded);
+    QCOMPARE(view.getCurrentFileDetails().baseImageSize, QSize(80, 60));
+}
+
+void VideoPlaybackTests::switchingExternalVideos()
+{
+    const QString path = qEnvironmentVariable("QVIEW_LOOP_STRESS_DIR");
+    if (path.isEmpty())
+        QSKIP("Set QVIEW_LOOP_STRESS_DIR to test an external media folder");
+    QDir folder(path);
+    QVERIFY(folder.exists());
+    const auto files = folder.entryInfoList({QStringLiteral("*.mp4"), QStringLiteral("*.MP4")},
+                                            QDir::Files, QDir::Name);
+    QVERIFY(!files.isEmpty());
+    QVGraphicsView view;
+    view.resize(640, 480);
+    view.show();
+    // Cover both interrupted loading and replacement after a decoded frame.
+    for (int delay : {1, 10, 50}) {
+        for (int pass = 0; pass < 3; ++pass) {
+            for (const auto &file : files) {
+                qInfo() << "Switching" << delay << pass << file.fileName();
+                view.loadFile(file.absoluteFilePath());
+                QTest::qWait(delay);
+            }
+        }
+    }
+    for (const auto &file : files) {
+        qInfo() << "Waiting for video" << file.fileName();
+        view.loadFile(file.absoluteFilePath());
+        QTRY_VERIFY_WITH_TIMEOUT(view.getCurrentFileDetails().isVideoLoaded
+                                || view.getCurrentFileDetails().errorData.hasError, 10000);
+        QVERIFY2(!view.getCurrentFileDetails().errorData.hasError,
+                 qPrintable(file.fileName() + ": " + view.getCurrentFileDetails().errorData.errorString));
+        QCOMPARE(view.getCurrentFileDetails().fileInfo.absoluteFilePath(), file.absoluteFilePath());
+        // Exercise the same folder-navigation path as the arrow keys, including
+        // video/image boundaries and returning while the new load is pending.
+        for (int i = 0; i < 5; ++i) {
+            view.goToFile(QVGraphicsView::GoToFileMode::next);
+            QTest::qWait(10);
+            view.goToFile(QVGraphicsView::GoToFileMode::previous);
+            QTest::qWait(10);
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(view.getCurrentFileDetails().isVideoLoaded, 10000);
+        QCOMPARE(view.getCurrentFileDetails().fileInfo.absoluteFilePath(), file.absoluteFilePath());
+    }
+    view.loadFile(fixture(QStringLiteral("still.png")));
+    QTRY_VERIFY_WITH_TIMEOUT(view.getCurrentFileDetails().isPixmapLoaded, 10000);
+    QTest::qWait(500);
+    QVERIFY(!view.getCurrentFileDetails().isVideoLoaded);
+    QCOMPARE(view.getCurrentFileDetails().baseImageSize, QSize(80, 60));
 }
 
 void VideoPlaybackTests::corruptVideoCanBeReplaced()
